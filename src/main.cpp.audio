@@ -1,0 +1,37 @@
+
+#include <Arduino.h>
+#include <SPI.h>
+#include <SD.h>
+#include "XT_DAC_Audio.h"
+#include "maju.h"
+
+     // create an object of type XT_Wav_Class that is used by 
+                                      // the dac audio class (below), passing wav data as parameter.
+XT_Wav_Class force(maju_wav);                             
+XT_DAC_Audio_Class DacAudio(26,0);    // Create the main player class object. 
+File myFile;
+                                      // Use GPIO 25, one of the 2 DAC pins and timer 0
+
+uint32_t DemoCounter=0;               // Just a counter to use in the serial monitor
+                                      // not essential to playing the sound
+unsigned char *WavData;
+uint16_t counter = 0;
+
+void setup() {
+    Serial.begin(115200);               // Not needed for sound, just to demo printing to the serial
+                                      // Monitor whilst the sound plays, ensure your serial monitor
+                                      // speed is set to this speed also.
+    if (!SD.begin(5,SPI, (F_CPU/2))) {
+      Serial.println("initialization failed!");
+      ESP.restart();
+    }
+
+}
+
+
+void loop() {
+  DacAudio.FillBuffer();                // Fill the sound buffer with data
+  if(force.Playing==false)       // if not playing,
+    DacAudio.Play(&force);       //                play it, this will cause it to repeat and repeat...
+  Serial.println(DemoCounter++);      // Showing that the sound will play as well as your code running here.
+}

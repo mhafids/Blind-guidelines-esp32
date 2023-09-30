@@ -1,0 +1,724 @@
+/*
+  "quaternion_compass_v1.ino"
+  Code by LINGIB
+  https://www.instructables.com/member/lingib/instructables/
+  Last update 28 Nov 2019.
+
+  ------
+  About:
+  ------
+  This compass uses the "Sparkfun MPU-9250 Breakout Arduino Library",
+  https://github.com/sparkfun/SparkFun_MPU-9250_Breakout_Arduino_Library, which was
+  forked from https://github.com/kriswiner/MPU9250.
+
+  This compass uses quaternions and behaves as though it is tilt-stabilized.
+
+  The code uses the open source Madgwick and Mahony filter quaternion algorithms for calculating
+  the pitch, roll, and yaw.
+
+  The printNumber function uses two overloaded functions that keep your column-numbers
+  steady, regardless of size or sign, by converting each number to a string then
+  pre-padding each column-width with spaces. The column-widths, which are currently
+  set to 6 may be altered by changing each "6" to "whatever-the-number-will-fit-into".
+
+  ---------------
+  Hardware setup:
+  ---------------
+  MPU9250 Breakout --------- Arduino
+  VDD ---------------------- 5V
+  SDA ---------------------- A4
+  SCL ---------------------- A5
+  GND ---------------------- GND
+
+  External pull-ups are not required as the MPU9250 has
+  internal 10K pull-ups to an internal 3.3V supply.
+
+  The MPU9250 is an I2C sensor and uses the Arduino Wire
+  library. Because the sensor is not 5V tolerant, the internal
+  pull-ups used by the Wire library in the Wire.h/twi.c utility file.
+
+  This may be achieved by editing lines 75,76,77 in your
+  "C:\Users\Your_name\Documents\Arduino\libraries\Wire\utility\wire.c" file to read:
+
+  // deactivate internal pullups for twi.
+  digitalWrite(SDA, 0);
+  digitalWrite(SCL, 0);
+
+  ---------------
+  Terms of use:
+  ---------------
+  The software is provided "AS IS", without any warranty of any kind, express or implied,
+  including but not limited to the warranties of mechantability, fitness for a particular
+  purpose and noninfringement. In no event shall the authors or copyright holders be liable
+  for any claim, damages or other liability, whether in an action of contract, tort or
+  otherwise, arising from, out of or in connection with the software or the use or other
+  dealings in the software.
+
+  -----------
+  Warning:
+  -----------
+  Do NOT use this compass in situations involving safety to life
+  such as navigation at sea.
+*/
+
+// ----- configure MPU9250
+#include "quaternionFilters.h"
+#include "MPU9250.h"
+#define I2Cclock 400000                                 // I2C clock is 400 kilobits/s
+#define I2Cport Wire                                    // I2C using Wire library
+#define MPU9250_ADDRESS MPU9250_ADDRESS_AD0             // MPU9250 address when ADO = 0 (0x68)  
+MPU9250 myIMU(MPU9250_ADDRESS, I2Cport, I2Cclock);      // Create myIMU instance using I2C at 400 kilobits/s
+
+// ----- configure 16x2 LCD display
+/* Comment-out the following line if you are not using a 16x2 LCD */
+#ifdef LCD2
+#include <LiquidCrystal_I2C.h>                                    // YwRobot Arduino LCM1602 IIC V1 library  
+LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);    // LCD pinouts: addr,en,rw,rs,d4,d5,d6,d7,bl,blpol
+#endif
+
+// ----- Select a TASK
+/* choose a TASK from the following list:
+  #define TASK 0    // Calibrate each time at start-up
+  #define TASK 1    // Calibrate once ... using onboard code
+  #define TASK 2    // Calibrate once ... using external "compass_cal.pde" software
+  #define TASK 3    // View ... register contents on "Serial Monitor" (115200 bauds)
+  #define TASK 4    // View ... pitch, roll, and compass-heading on "Serial Monitor" (115200 bauds)
+  #define TASK 5    // View ... compass-heading using external "compass_rose.pde" software
+  #define TASK 6    // View ... pitch, roll, and compass-heading on 16x2 LCD display
+*/
+#define TASK 4
+
+// ----- user offsets and scale-factors
+/*
+   Each of the following values must be overwritten with the offsets and scale-factors for
+   YOUR location otherwise you will have to "tumble" your compass every time you switch it on.
+   There are two methods for obtaining this data:
+
+   Method 1:
+   --------
+   Set "#define TASK 1". Upload this change to your Arduino.
+   You will be asked to "tumble" your  compass for 30 seconds.
+   Replace (copy-&-paste) the values below with the offsets and scale-factors that appear on your computer screen.
+   Once you have done this select one of  TASKs 3,4, or 5 and upload these changes to your Arduino
+   This method is less accurate than Method 2
+
+   Method 2:
+   ---------
+   Set "#define TASK 2". Upload this change to your Arduino.
+   Run Processing "compass_cal.pde" and follow the on-screen instructions.
+   Replace (copy-and-paste) the values below with the offsets and scale-factors that appear on your computer screen.
+   Close Processing "compass_cal.pde"
+   Once you have done this select one of  TASKs 3,4, or 5 and upload these changes to your Arduino
+   This method is more accurate, and more consistent,than method 1
+*/
+
+// ----- NZ Offsets & Scale-factors
+// float
+// Mag_x_offset = -34.560013,
+// Mag_y_offset = 528.885,
+// Mag_z_offset = -125.259995,
+// Mag_x_scale = 1.0247924,
+// Mag_y_scale = 0.99078894,
+// Mag_z_scale = 0.9853226;
+
+float
+Mag_x_offset = 50.18,
+Mag_y_offset = 143.85,
+Mag_z_offset = 52.54,
+Mag_x_scale = 0.89,
+Mag_y_scale = 1.33,
+Mag_z_scale = 0.89;
+
+
+// ----- Magnetic declination
+/*
+  The magnetic declination for Lower Hutt, New Zealand is +22.5833 degrees
+  Obtain your magnetic declination from http://www.magnetic-declination.com/
+  By convention, declination is positive when magnetic north
+  is east of true north, and negative when it is to the west.
+  Substitute your magnetic declination for the "Declination" shown below.
+*/
+#define True_North false                                // change this to "true" for True North                
+float Declination = +22.5833;                           // substitute your magnetic declination 
+
+// ======================= NO CODE CHANGES ARE REQUIRED BEYOND THIS POINT =========================
+
+// ----- Arduino pin definitions
+short MyLed  = 13;                                      // LED on pin 13 ... toggles when data active
+
+// ----- Processing variables
+char InputChar;                                         // incoming characters stored here
+bool LinkEstablished = false;                           // receive flag
+String OutputString = "";                               // outgoing data string to Processing
+
+// ----- software timer
+unsigned long Timer1 = 100000L;                         // 500mS loop ... used when sending data to to Processing
+unsigned long Stop1;                                    // Timer1 stops when micros() exceeds this value
+
+// ----------
+// setup()
+// ----------
+
+void refresh_data();
+void compass_cal();
+void compass_rose();
+void display_compass_heading_on_serial_monitor();
+long printNumber(short number);
+float printNumber(float number);
+
+void setup()
+{
+  // ----- Enable comunications
+  /* Don't forget to disable your I2C pull-up resistors */
+  Serial.begin(115200);                                 // Start serial port
+  while (!Serial);                                      // Not required for Arduino UNO but needed when porting code to the M4 Express
+  Wire.begin();                                         // Start I2C as master
+  Wire.setClock(400000);                                // Set I2C clock speed to 400kbs
+
+  // ----- Configure LCD display
+#ifdef LCD2
+  lcd.begin(16, 2);                                     // Configure 16 char x 2 line LCD display
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("   Quaternion"));
+  lcd.setCursor(0, 1);
+  lcd.print(F("   Compass V1"));
+  delay(2000);
+#endif
+
+  // ----- LED indicator
+  pinMode(MyLed, OUTPUT);
+  digitalWrite(MyLed, HIGH);
+
+  // ----- Look for MPU9250|MPU9255
+  byte gyroID = myIMU.readByte(MPU9250_ADDRESS, WHO_AM_I_MPU9250);
+  if (!((gyroID == 0x71) || (gyroID == 0x73)))
+
+    /*
+      I AM 73 means you have an MPU9255. More or less the same as
+      MPU9250 but with some extra functionality.
+    */
+
+  {
+    // ------ Failed to connect
+    Serial.print(F("WHO_AM_I = "));
+    Serial.println(gyroID, HEX);
+    Serial.println(F("Could not connect to the MPU9250/MPU9255"));
+    Serial.println(F("Communication failed ... program aborted !!"));
+    Serial.flush();
+    abort();
+  }
+  else
+  {
+    // ----- MPU9250|MPU9255 found
+    if (gyroID == 0x71) Serial.println(F("WHO_AM_I = 0x71\nMPU9250 is online ..."));
+    if (gyroID == 0x73) Serial.println(F("WHO_AM_I = 0x73\nMPU9255 is online ..."));
+    Serial.println("");
+
+    // ----- Start by performing self test and reporting values
+    myIMU.MPU9250SelfTest(myIMU.selfTest);
+    Serial.print(F("x-axis self test: acceleration trim within : "));
+    Serial.print(myIMU.selfTest[0], 1); Serial.println("% of factory value");
+
+    Serial.print(F("y-axis self test: acceleration trim within : "));
+    Serial.print(myIMU.selfTest[1], 1); Serial.println("% of factory value");
+
+    Serial.print(F("z-axis self test: acceleration trim within : "));
+    Serial.print(myIMU.selfTest[2], 1); Serial.println("% of factory value");
+
+    Serial.print(F("x-axis self test: gyration trim within : "));
+    Serial.print(myIMU.selfTest[3], 1); Serial.println("% of factory value");
+
+    Serial.print(F("y-axis self test: gyration trim within : "));
+    Serial.print(myIMU.selfTest[4], 1); Serial.println("% of factory value");
+
+    Serial.print(F("z-axis self test: gyration trim within : "));
+    Serial.print(myIMU.selfTest[5], 1); Serial.println("% of factory value");
+    Serial.println("");
+
+    Serial.println(F("Place the compass on a level surface"));
+    Serial.println(F(""));
+
+#ifdef LCD2
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Place compass");
+    lcd.setCursor(0, 1);
+    lcd.print("on level surface");
+#endif
+
+    delay(4000);                        // allow time to place the compass in position
+
+    // ----- Calibrate gyro and accelerometers, load biases in bias registers
+    myIMU.calibrateMPU9250(myIMU.gyroBias, myIMU.accelBias);
+
+    // ----- Initialize device for active mode read of accelerometer, gyroscope, and
+    //       temperature
+    myIMU.initMPU9250();
+    Serial.println(F("MPU9250 initialized for active data mode...."));
+    Serial.println("");
+  }
+
+  // ----- Look for the AK8963 magnetometer
+  byte MagID = myIMU.readByte(AK8963_ADDRESS, WHO_AM_I_AK8963);
+  if (!(MagID == 0x48))
+  {
+    // ----- Communication failed, stop here
+    Serial.print(F("WHO_AM_I = "));
+    Serial.println(MagID, HEX);
+    Serial.println(F("Could not connect to the AK8963"));
+    Serial.println(F("Communication failed ... program aborted !!"));
+    Serial.flush();
+    abort();
+  }
+  else
+  {
+    // ----- AK8963 found
+    Serial.println(F("WHO_AM_I = 0x48\nAK8963 is online ..."));
+    Serial.println("");
+
+    // ----- Get factory ASA calibration values
+    myIMU.initAK8963(myIMU.factoryMagCalibration);
+
+    // ----- Initialize device for active mode read of magnetometer
+    Serial.println(F("AK8963 initialized for active data mode...."));
+    Serial.println("");
+
+    // ----- Display AK8963 fuse rom values
+    Serial.println(F("AK8963 Fuse ROM values: "));
+    Serial.print(F("ASAX: "));
+    Serial.println(myIMU.factoryMagCalibration[0], 2);
+    Serial.print(F("ASAY: "));
+    Serial.println(myIMU.factoryMagCalibration[1], 2);
+    Serial.print(F("ASAZ: "));
+    Serial.println(myIMU.factoryMagCalibration[2], 2);
+    Serial.println("");
+
+    // ----- Get correct sensor resolutions (You only need to do this once)
+    myIMU.getAres();      // milli-gravity
+    myIMU.getGres();      // dps
+    myIMU.getMres();      // milli-Gauss 14-bit|16-bit
+
+    // ---- display sensor scale multipliers
+    Serial.println(F("Sensor-scale multipliers"));
+    Serial.print(F("accel: "));
+    Serial.println(myIMU.aRes, 6);
+    Serial.print(F(" gyro: "));
+    Serial.println(myIMU.gRes, 6);
+    Serial.print(F("  mag: "));
+    Serial.println(myIMU.mRes, 6);
+    Serial.println("");
+  }
+
+  // -----------------------------------------------------------------
+  // TASK 0,1 ... On-board calibration
+  // -----------------------------------------------------------------
+  if ((TASK == 0) || (TASK == 1))
+  {
+#ifdef LCD2
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Tumble compass"));
+    lcd.setCursor(0, 1);
+    lcd.print(F("for 30 seconds"));
+#endif
+
+    myIMU.magCalMPU9250(myIMU.magBias, myIMU.magScale);
+
+#ifdef LCD2
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Stop tumbling"));
+    delay(4000);
+#endif
+  }
+
+  if (TASK == 1)
+  {
+#ifdef LCD2
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Record offsets"));
+    lcd.setCursor(0, 1);
+    lcd.print(F("& scale-factors"));
+#endif
+
+    // ----- Message
+    Serial.println(F("------------------------------------------"));
+    Serial.println(F("Copy-&-paste the following code into your "));
+    Serial.println(F("Arduino header then delete the old code."));
+    Serial.println(F("------------------------------------------"));
+    Serial.println(F(""));
+    Serial.println(F("float"));
+    Serial.print(F("Mag_x_offset = "));
+    Serial.print(myIMU.magBias[0]);
+    Serial.println(",");
+    Serial.print(F("Mag_y_offset = "));
+    Serial.print(myIMU.magBias[1]);
+    Serial.println(",");
+    Serial.print(F("Mag_z_offset = "));
+    Serial.print(myIMU.magBias[2]);
+    Serial.println(",");
+    Serial.print(F("Mag_x_scale = "));
+    Serial.print(myIMU.magScale[0]);
+    Serial.println(",");
+    Serial.print(F("Mag_y_scale = "));
+    Serial.print(myIMU.magScale[1]);
+    Serial.println(",");
+    Serial.print(F("Mag_z_scale = "));
+    Serial.print(myIMU.magScale[2]);
+    Serial.println(F(";"));
+
+    // ----- Halt program
+    while (true);
+  }
+
+  // -----------------------------------------------------------------
+  // TASK 2 ... message
+  // -----------------------------------------------------------------
+  if (TASK == 2)
+  {
+#ifdef LCD2
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Run compass_cal"));
+    lcd.setCursor(0, 1);
+    lcd.print(F("on your PC"));
+#endif
+  }
+
+  // -----------------------------------------------------------------
+  // TASK 3,4,5,6 ... Use recorded offsets and scale factors
+  // -----------------------------------------------------------------
+  if ((TASK == 3) || (TASK == 4) || (TASK == 5) || (TASK == 6))
+  {
+    // ----- Copy the hard-iron offsets
+    myIMU.magBias[0] = Mag_x_offset;
+    myIMU.magBias[1] = Mag_y_offset;
+    myIMU.magBias[2] = Mag_z_offset;
+
+    // ----- Copy the soft-iron scalefactors
+    myIMU.magScale[0] = Mag_x_scale;
+    myIMU.magScale[1] = Mag_y_scale;
+    myIMU.magScale[2] = Mag_z_scale;
+
+    // ----- Display offsets & scale-factors
+    Serial.println("");
+    Serial.print("Mag_x_offset = ");
+    Serial.println(myIMU.magBias[0]);
+    Serial.print("Mag_y_offset = ");
+    Serial.println(myIMU.magBias[1]);
+    Serial.print("Mag_z_offset = ");
+    Serial.println(myIMU.magBias[2]);
+    Serial.print("Mag_x_scale = ");
+    Serial.println(myIMU.magScale[0]);
+    Serial.print("Mag_y_scale = ");
+    Serial.println(myIMU.magScale[1]);
+    Serial.print("Mag_z_scale = ");
+    Serial.println(myIMU.magScale[2]);
+    Serial.println("");
+  }
+
+  // -----------------------------------------------------------------
+  // TASK 3,4 ... common message
+  // -----------------------------------------------------------------
+  if ((TASK == 3) || (TASK == 4))
+  {
+#ifdef LCD2
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Serial Monitor"));
+    lcd.setCursor(0, 1);
+    lcd.print(F("115200 bauds"));
+#endif
+  }
+
+  // -----------------------------------------------------------------
+  // TASK 5 ... message
+  // -----------------------------------------------------------------
+  if (TASK == 5)
+  {
+#ifdef LCD2
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Run compass_rose"));
+    lcd.setCursor(0, 1);
+    lcd.print(F("on your PC"));
+#endif
+  }
+
+  // ----- start software timer
+  Stop1 = micros() + Timer1;                            // Used by send_data() function
+}
+
+// ----------
+// loop()
+// ----------
+void loop()
+{
+  refresh_data();                                       // this must be done each time through the loop
+
+  // ----- Processing Tasks
+  switch (TASK) {
+    case 2:
+      compass_cal();                                    // Get compass offsets and scale-factors using Processing "compass_cal.pde" (circle-method)
+      break;
+    case 5:
+      compass_rose();                                   // Display compass heading using Processing "compass_rose.pde"
+      break;
+    default:
+      break;
+  }
+
+  // ----- Perform these tasks every 500mS
+  if (micros() > Stop1)
+  {
+    Stop1 += Timer1;                                    // Reset timer
+
+    // ----- Serial Monitor Tasks
+        display_compass_heading_on_serial_monitor();    // Display compass pitch roll & heading on Serial Monitor (115200 bauds)
+       
+    
+  }
+}
+
+
+
+void refresh_data()
+{
+  // ----- Poll the MPU9250 interrupt status in I2C mode
+  if (myIMU.readByte(MPU9250_ADDRESS, INT_STATUS) & 0x01)
+  {
+    // ----- Read the accelerometer x|y|z register values
+    myIMU.readAccelData(myIMU.accelCount);                                  // Read accelerometer register values
+
+    // ----- Now we'll calculate the acceleration value into actual g's
+    //       This depends on scale being set
+    myIMU.ax = (float)myIMU.accelCount[0] * myIMU.aRes;                     // Convert raw register value to milli-Gauss
+    myIMU.ay = (float)myIMU.accelCount[1] * myIMU.aRes;                     // Convert raw register value to milli-Gauss
+    myIMU.az = (float)myIMU.accelCount[2] * myIMU.aRes;                     // Convert raw register value to milli-Gauss
+
+    // ----- Read the gyro x|y|z register values
+    myIMU.readGyroData(myIMU.gyroCount);                                    // Read gyro register values
+
+    // ----- Calculate the gyro value into actual degrees per second
+    //       This depends on scale being set
+    myIMU.gx = (float)myIMU.gyroCount[0] * myIMU.gRes;                      // Convert raw register value to dps  <-+   plus -ve sign for positive pitch
+    myIMU.gy = (float)myIMU.gyroCount[1] * myIMU.gRes;                      // Convert raw register value to dps  <-+--- gx & gy interchanged
+    myIMU.gz = (float)myIMU.gyroCount[2] * myIMU.gRes;                      // Convert raw register value to dps <----- applied -ve sign for CW rotation
+
+    // Read the magnetometer x|y|z register values
+    myIMU.readMagData(myIMU.magCount);                                      // Read magnetometer register values
+
+    // ----- Calculate the magnetometer values in milliGauss and  apply
+    //       the ASA fuse ROM values and milli-Gauss scale corrections
+    //       The MPU92590 magnetometer uses the 14-bit scale-correction of 0.6
+    myIMU.mx = (float)myIMU.magCount[0] * myIMU.mRes * myIMU.factoryMagCalibration[0] - myIMU.magBias[0];   // Convert/correct raw register value to milli-Gauss
+    myIMU.my = (float)myIMU.magCount[1] * myIMU.mRes * myIMU.factoryMagCalibration[1] - myIMU.magBias[1];   // Convert/correct raw register value to milli-Gauss
+    myIMU.mz = (float)myIMU.magCount[2] * myIMU.mRes * myIMU.factoryMagCalibration[2] - myIMU.magBias[2];   // Convert/correct raw register value to milli-Gauss
+  }
+
+  // ----- This library function MUST be called before updating the Mahoney quaternions!
+  myIMU.updateTime();
+
+  /*
+     The following quaternion values assume that the MPU-9250 gyro X-axis
+     is pointing North and that the gyro Z-axis is pointing upwards.
+
+     These values produce:
+      - a clockwise heading of 0..360 degrees if we use the formula "Heading = atan2(myIMU.mx, myIMU.my;"
+      - q0,q1,q2,q3 values of 1,0,0,0 when the compass is pointing north
+  */
+
+  MahonyQuaternionUpdate(  myIMU.ax,              -myIMU.ay,              myIMU.az,
+                           myIMU.gx * DEG_TO_RAD, -myIMU.gy * DEG_TO_RAD, myIMU.gz * DEG_TO_RAD,
+                           myIMU.my,              -myIMU.mx,              -myIMU.mz,
+                           myIMU.deltat);
+
+  //  MadgwickQuaternionUpdate( myIMU.ax,              -myIMU.ay,              myIMU.az,
+  //                            myIMU.gx * DEG_TO_RAD, -myIMU.gy * DEG_TO_RAD, myIMU.gz * DEG_TO_RAD,
+  //                            myIMU.my,              -myIMU.mx,              -myIMU.mz,
+  //                            myIMU.deltat);
+
+  // ----- calculate the pitch in degrees using Magwick quaternions
+  myIMU.pitch = asin(2.0f * (*(getQ() + 1) * *(getQ() + 3) - *getQ() * *(getQ() + 2)));
+
+  // ----- calculate the roll in degrees using Magwick quaternions
+  myIMU.roll = -atan2(2.0f * (*getQ() * *(getQ() + 1) + * (getQ() + 2) * *(getQ() + 3)), *getQ() * *getQ() - * (getQ() + 1)
+                      * *(getQ() + 1) - * (getQ() + 2) * *(getQ() + 2) + * (getQ() + 3) * *(getQ() + 3));
+
+  // ----- calculate the yaw in degrees using Magwick quaternions
+  myIMU.yaw = atan2(2.0f * (*(getQ() + 1) * *(getQ() + 2) + *getQ() * *(getQ() + 3)), *getQ() * *getQ() + * (getQ() + 1)
+                    * *(getQ() + 1) - * (getQ() + 2) * *(getQ() + 2) - * (getQ() + 3) * *(getQ() + 3));
+}
+
+void compass_cal()
+{
+  // ----- Locals
+  float
+  xPos,
+  yPos,
+  zPos;
+
+  // ----- read input character
+  if (Serial.available()) {
+    InputChar = Serial.read();
+    if ((InputChar == 's') || (InputChar == 'S')) {
+      LinkEstablished = true;
+    }
+  }
+
+  // -----Read the magnetometer x|y|z register values
+  myIMU.readMagData(myIMU.magCount);
+
+  // ----- calculate the magnetometer values (no offsets)
+  xPos = (float)myIMU.magCount[0] * myIMU.factoryMagCalibration[0] * myIMU.mRes;   // raw mx * ASAX * 0.6 (mG)
+  yPos = (float)myIMU.magCount[1] * myIMU.factoryMagCalibration[1] * myIMU.mRes;   // raw my * ASAY * 0.6 (mG)
+  zPos = (float)myIMU.magCount[2] * myIMU.factoryMagCalibration[2] * myIMU.mRes;   // raw mz * ASAZ * 0.6 (mG)
+
+  // ------ create output data string
+  OutputString = String(xPos) + ',' + String(yPos) + ',' + String(zPos);
+
+  // ----- send string if link established
+  if (LinkEstablished && ((InputChar == 's') || (InputChar == 'S'))) {
+    InputChar = 'x';
+    Serial.println(OutputString);
+  }
+
+  // ----- send 'S' if link not established
+  if (micros() > Stop1) {
+    Stop1 += Timer1;
+    if (!LinkEstablished) {
+      Serial.println('S');
+    }
+  }
+}
+
+void compass_rose()
+{
+  // ----- read input character
+  if (Serial.available()) {
+    InputChar = Serial.read();
+    if ((InputChar == 's') || (InputChar == 'S')) {
+      LinkEstablished = true;
+    }
+  }
+
+  // ----- get compass heading
+  /*
+     The normal range for myIMU.yaw is  +/- 0..179 degrees. Adding 360 to
+     the negative readings converts the range to 0..360 degrees. The yaw
+     output is heavily damped but doesn't appear to suffer from pitch or roll.
+     For all practical purposes the compass yaw and compass heading are the same
+  */
+  float heading = myIMU.yaw * RAD_TO_DEG;
+  if (heading < 0) heading += 360.0;              // Yaw goes negative between 180 amd 360 degrees
+  if (True_North == true) heading += Declination; // Calculate True North
+  if (heading < 0) heading += 360.0;              // Keep heading within 0..360 degrees
+  if (heading > 360) heading -= 360.0;
+
+  // ------ create output data string
+  OutputString = String(heading);
+
+  // ----- send string if link established
+  if (LinkEstablished && ((InputChar == 's') || (InputChar == 'S'))) {
+    Serial.println(OutputString);
+  }
+
+  // ----- send 'S' if link not established
+  if (micros() > Stop1) {
+    Stop1 += Timer1;
+    if (!LinkEstablished) {
+      Serial.println('S');
+    }
+  }
+}
+
+void display_compass_heading_on_serial_monitor()
+{
+  //  // ----- display sample rate (Hz)
+  //  Serial.print("rate ");
+  //  printNumber((float)myIMU.sumCount / myIMU.sum);
+
+  // ----- display quaternions
+  Serial.print(" |   q0|qx|qy|qz ");
+  printNumber(*getQ());
+  printNumber(*(getQ() + 1));
+  printNumber(*(getQ() + 2));
+  printNumber(*(getQ() + 3));
+
+  //  // ----- display accelerometer xyz in milli-gravities (mg)
+  //  Serial.print(" |   accel ");
+  //  printNumber((short)(myIMU.ax * 1000));
+  //  printNumber((short)(myIMU.ay * 1000));
+  //  printNumber((short)(myIMU.az * 1000));
+
+  //  // ----- display gyro xyz in degrees/sec (dps)
+  //  Serial.print(" |   gyro ");
+  //  printNumber((short)(myIMU.gx));
+  //  printNumber((short)(myIMU.gy));
+  //  printNumber((short)(myIMU.gz));
+
+  //  // ----- display magnetometer xyz in milliGausss (mG)
+  //  Serial.print(" |   mag ");
+  //  printNumber((short)myIMU.mx);
+  //  printNumber((short)myIMU.my);
+  //  printNumber((short)myIMU.mz);
+
+  //  // ----- display pitch/roll/yaw in degrees (deg)
+  //  Serial.print(" |   p/r/yaw ");
+  //  printNumber((short)myIMU.pitch);
+  //  printNumber((short)myIMU.roll);
+  //  float yaw = myIMU.yaw;
+  //  if (yaw > 360.0) yaw -= 360.0;
+  //  if (yaw < 0.0) yaw += 360.0;
+  //  printNumber((short)yaw);
+
+  //  // ----- display the compass heading in degrees (float)
+  //  Serial.print(" |   Heading: ");
+  //  printNumber(Heading);
+
+  // ----- display the pitch
+  Serial.print(" |   Pitch: ");
+  printNumber((short)(round(myIMU.pitch * RAD_TO_DEG)));
+
+  // ----- display the roll
+  Serial.print(" |   Roll: ");
+  printNumber((short)(round(myIMU.roll * RAD_TO_DEG)));
+
+  /*
+     For all practical purposes the compass yaw and compass heading are the same
+  */
+
+  // ----- display the heading
+  Serial.print(" |   Heading: ");
+  float heading = myIMU.yaw * RAD_TO_DEG;
+  if (heading < 0) heading += 360.0;              // Yaw goes negative between 180 amd 360 degrees
+  if (True_North == true) heading += Declination; // calculate True North
+  if (heading < 0) heading += 360.0; 
+  if (heading > 360) heading -= 360.0;
+  printNumber((short)(round(heading)));
+
+  // ----- line ending
+  Serial.println("");
+}
+
+// ----- Routine to stop integer numbers jumping around
+long printNumber(short number) {
+  String myString = String(number);
+  short numberChars = myString.length();
+  for (short i = 0; i < 6 - numberChars; i++) {
+    Serial.print(" ");
+  }
+  Serial.print(myString);
+}
+
+// ----- Routine to stop floats jumping around
+float printNumber(float number) {
+  String myString = String(number);
+  short numberChars = myString.length();
+  for (short i = 0; i < 6 - numberChars; i++) {
+    Serial.print(" ");
+  }
+  Serial.print(myString);
+}

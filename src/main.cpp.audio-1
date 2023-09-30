@@ -1,0 +1,50 @@
+#include <Arduino.h>
+#ifdef ESP32
+    #include <WiFi.h>
+#else
+    #include <ESP8266WiFi.h>
+#endif
+
+#include "AudioFileSourceSD.h"
+#include "AudioGeneratorWAV.h"
+#include "AudioOutputI2S.h"
+
+
+// VIOLA sample taken from https://ccrma.stanford.edu/~jos/pasp/Sound_Examples.html
+// #include "maju.h"
+// #include "viola.h"
+
+AudioGeneratorWAV *wav;
+AudioFileSourceSD *file;
+AudioOutputI2S *out;
+
+void setup()
+{
+  WiFi.mode(WIFI_OFF); 
+  Serial.begin(115200);
+  if (!SD.begin(5)) {
+    Serial.println("initialization failed!");
+    ESP.restart();
+  }
+  delay(1000);
+  Serial.printf("WAV start\n");
+
+  File myfile = SD.open("/maju.wav");
+  file = new AudioFileSourceSD("/Nella Kharisma - Kau Tercipta Bukan Untukku (Official Music Video).wav");
+  out = new AudioOutputI2S(0, 1);
+  out->SetBitsPerSample(8);
+  out->SetChannels(1);
+  out->SetGain(1);
+  wav = new AudioGeneratorWAV();
+  wav->begin(file, out);
+}
+
+void loop()
+{
+  if (wav->isRunning()) {
+    if (!wav->loop()) wav->stop();
+  } else {
+    // Serial.printf("WAV done\n");
+    // delay(1000);
+  }
+}
